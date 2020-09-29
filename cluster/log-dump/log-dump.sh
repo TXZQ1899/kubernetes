@@ -55,7 +55,7 @@ readonly extra_log_files="${LOG_DUMP_EXTRA_FILES:-}"
 readonly extra_systemd_services="${LOG_DUMP_SAVE_SERVICES:-}"
 readonly dump_systemd_journal="${LOG_DUMP_SYSTEMD_JOURNAL:-false}"
 # Log files found in WINDOWS_LOGS_DIR on Windows nodes:
-readonly windows_node_logfiles="kubelet.log kube-proxy.log docker.log docker_images.log"
+readonly windows_node_logfiles="kubelet.log kube-proxy.log docker.log docker_images.log csi-proxy.log"
 # Log files found in other directories on Windows nodes:
 readonly windows_node_otherfiles="C:\\Windows\\MEMORY.dmp"
 
@@ -86,6 +86,7 @@ function setup() {
     echo "LOG_DUMP_SSH_USER not set, but required when using log_dump_custom_get_instances"
     exit 1
   fi
+  source "${KUBE_ROOT}/hack/lib/util.sh"
 }
 
 function log-dump-ssh() {
@@ -502,20 +503,29 @@ function dump_nodes_with_logexporter() {
   local -r cloud_provider="${KUBERNETES_PROVIDER}"
   local -r enable_hollow_node_logs="${ENABLE_HOLLOW_NODE_LOGS:-false}"
   local -r logexport_sleep_seconds="$(( 90 + NUM_NODES / 3 ))"
+  if [[ -z "${ZONE_NODE_SELECTOR_DISABLED:-}" ]]; then
+    local -r node_selector="${ZONE_NODE_SELECTOR_LABEL:-topology.kubernetes.io/zone}: ${ZONE}"
+  fi
 
   # Fill in the parameters in the logexporter daemonset template.
-  sed -i'' -e "s@{{.LogexporterNamespace}}@${logexporter_namespace}@g" "${KUBE_ROOT}/cluster/log-dump/logexporter-daemonset.yaml"
-  sed -i'' -e "s@{{.ServiceAccountCredentials}}@${service_account_credentials}@g" "${KUBE_ROOT}/cluster/log-dump/logexporter-daemonset.yaml"
-  sed -i'' -e "s@{{.CloudProvider}}@${cloud_provider}@g" "${KUBE_ROOT}/cluster/log-dump/logexporter-daemonset.yaml"
-  sed -i'' -e "s@{{.GCSPath}}@${gcs_artifacts_dir}@g" "${KUBE_ROOT}/cluster/log-dump/logexporter-daemonset.yaml"
-  sed -i'' -e "s@{{.EnableHollowNodeLogs}}@${enable_hollow_node_logs}@g" "${KUBE_ROOT}/cluster/log-dump/logexporter-daemonset.yaml"
-  sed -i'' -e "s@{{.DumpSystemdJournal}}@${dump_systemd_journal}@g" "${KUBE_ROOT}/cluster/log-dump/logexporter-daemonset.yaml"
-  sed -i'' -e "s@{{.ExtraLogFiles}}@${extra_log_files}@g" "${KUBE_ROOT}/cluster/log-dump/logexporter-daemonset.yaml"
-  sed -i'' -e "s@{{.ExtraSystemdServices}}@${extra_systemd_services}@g" "${KUBE_ROOT}/cluster/log-dump/logexporter-daemonset.yaml"
+  local -r tmp="${KUBE_TEMP}/logexporter"
+  local -r manifest_yaml="${tmp}/logexporter-daemonset.yaml"
+  mkdir -p "${tmp}"
+  cp "${KUBE_ROOT}/cluster/log-dump/logexporter-daemonset.yaml" "${manifest_yaml}"
+
+  sed -i'' -e "s@{{.NodeSelector}}@${node_selector:-}@g" "${manifest_yaml}"
+  sed -i'' -e "s@{{.LogexporterNamespace}}@${logexporter_namespace}@g" "${manifest_yaml}"
+  sed -i'' -e "s@{{.ServiceAccountCredentials}}@${service_account_credentials}@g" "${manifest_yaml}"
+  sed -i'' -e "s@{{.CloudProvider}}@${cloud_provider}@g" "${manifest_yaml}"
+  sed -i'' -e "s@{{.GCSPath}}@${gcs_artifacts_dir}@g" "${manifest_yaml}"
+  sed -i'' -e "s@{{.EnableHollowNodeLogs}}@${enable_hollow_node_logs}@g" "${manifest_yaml}"
+  sed -i'' -e "s@{{.DumpSystemdJournal}}@${dump_systemd_journal}@g" "${manifest_yaml}"
+  sed -i'' -e "s@{{.ExtraLogFiles}}@${extra_log_files}@g" "${manifest_yaml}"
+  sed -i'' -e "s@{{.ExtraSystemdServices}}@${extra_systemd_services}@g" "${manifest_yaml}"
 
   # Create the logexporter namespace, service-account secret and the logexporter daemonset within that namespace.
   KUBECTL="${KUBE_ROOT}/cluster/kubectl.sh"
-  if ! "${KUBECTL}" create -f "${KUBE_ROOT}/cluster/log-dump/logexporter-daemonset.yaml"; then
+  if ! "${KUBECTL}" create -f "${manifest_yaml}"; then
     echo "Failed to create logexporter daemonset.. falling back to logdump through SSH"
     "${KUBECTL}" delete namespace "${logexporter_namespace}" || true
     dump_nodes "${NODE_NAMES[@]}"
@@ -629,6 +639,7 @@ function detect_node_failures() {
 
 function main() {
   setup
+  kube::util::ensure-temp-dir
   # Copy master logs to artifacts dir locally (through SSH).
   echo "Dumping logs from master locally to '${report_dir}'"
   dump_masters

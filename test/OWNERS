@@ -1,10 +1,12 @@
 # See the OWNERS docs at https://go.k8s.io/owners
 
 reviewers:
+  - aojea
   - neolit123
   - johnSchnake
   - SataQiu
   - tanjunchen
+  - dims
 approvers:
   - alejandrox1
   - andrewsykim
